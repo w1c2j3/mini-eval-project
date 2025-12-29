@@ -1,2 +1,0 @@
-# mini-eval-project
-
