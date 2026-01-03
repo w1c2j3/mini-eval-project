@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Mini Eval</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-content">
+            <a href="/" class="brand">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
+                </svg>
+                Mini Eval
+            </a>
+            <div style="display: flex; gap: 1rem; align-items: center;">
+                <span id="userDisplay" class="text-sm text-muted"></span>
+                <button onclick="logout()" class="btn btn-secondary btn-sm">Sign Out</button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Hero Section: Create Evaluation -->
+        <div class="grid-cols-2 mb-4">
+            <div class="card" style="justify-content: center; border-left: 4px solid var(--primary);">
+                <h2>🚀 Start New Evaluation</h2>
+                <p>Select a model and dataset to begin a concurrent performance benchmark.</p>
+                
+                <form id="evalForm">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div>
+                            <label>Model</label>
+                            <select id="modelSelect" required>
+                                <option value="" disabled selected>Loading models...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label>Dataset</label>
+                            <select id="datasetSelect" required>
+                                <option value="" disabled selected>Loading datasets...</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="flex-end">
+                         <button type="submit" class="btn btn-primary">
+                            Run Evaluation &rarr;
+                         </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Quick Actions / Uploads -->
+            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                <!-- Accordion-like Toggles for Management -->
+                <div class="card" style="padding: 1rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleSection('modelConfig')">
+                        <h3 style="margin:0; font-size: 1rem;">⚙️ Manage Models</h3>
+                        <span class="text-muted" style="font-size: 0.8rem;">Expand +</span>
+                    </div>
+                    <div id="modelConfig" class="hidden mt-4">
+                        <form id="modelForm">
+                            <input type="text" id="modelName" placeholder="Display Name (e.g. GPT-4o)" required>
+                            <input type="text" id="modelIdentifier" placeholder="API Model ID (e.g. gpt-4o)" required>
+                            <input type="text" id="apiBase" placeholder="API Base URL" required>
+                            <input type="password" id="apiKey" placeholder="API Key" required>
+                            <input type="number" id="concurrency" placeholder="Concurrency (default: 5)" value="5">
+                            <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%">Add Model</button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="card" style="padding: 1rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleSection('datasetConfig')">
+                        <h3 style="margin:0; font-size: 1rem;">📂 Upload Dataset</h3>
+                        <span class="text-muted" style="font-size: 0.8rem;">Expand +</span>
+                    </div>
+                    <div id="datasetConfig" class="hidden mt-4">
+                        <form id="datasetForm">
+                            <input type="text" id="datasetName" placeholder="Dataset Name" required>
+                            <input type="file" id="datasetFile" accept=".jsonl" required style="padding: 0.5rem 0;">
+                            <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%">Upload JSONL</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Tasks Table -->
+        <h3 class="mb-4" style="margin-top: 2rem;">Recent Benchmarks</h3>
+        <div class="table-container">
+            <div id="taskList">
+                <div style="padding: 2rem; text-align: center; color: var(--text-secondary);">Loading tasks...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+    <script>
+        checkAuth();
+
+        function toggleSection(id) {
+            const el = document.getElementById(id);
+            el.classList.toggle('hidden');
+        }
+
+        async function loadOptions() {
+            try {
+                const [models, datasets] = await Promise.all([
+                    apiCall('/models/'),
+                    apiCall('/datasets/')
+                ]);
+                
+                const modelSelect = document.getElementById('modelSelect');
+                if (models.length > 0) {
+                    modelSelect.innerHTML = models.map(m => `<option value="${m.id}">${m.name} (${m.model_name_identifier})</option>`).join('');
+                } else {
+                    modelSelect.innerHTML = `<option disabled selected>No models configured</option>`;
+                }
+
+                const datasetSelect = document.getElementById('datasetSelect');
+                if (datasets.length > 0) {
+                    datasetSelect.innerHTML = datasets.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+                } else {
+                    datasetSelect.innerHTML = `<option disabled selected>No datasets uploaded</option>`;
+                }
+            } catch (e) {
+                console.error("Failed to load options", e);
+            }
+        }
+
+        async function loadTasks() {
+            try {
+                const tasks = await apiCall('/tasks/');
+                const list = document.getElementById('taskList');
+                
+                if (tasks.length === 0) {
+                    list.innerHTML = `<div style="padding: 2rem; text-align: center; color: var(--text-secondary);">No evaluations run yet.</div>`;
+                    return;
+                }
+
+                list.innerHTML = `<table>
+                    <thead>
+                        <tr>
+                            <th width="80">ID</th>
+                            <th width="120">Status</th>
+                            <th>Accuracy</th>
+                            <th>Latency (Avg)</th>
+                            <th>Tokens (Avg)</th>
+                            <th>Date</th>
+                            <th style="text-align: right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${tasks.map(t => `
+                            <tr>
+                                <td><span style="font-family: monospace; color: var(--text-secondary)">#${t.id}</span></td>
+                                <td><span class="badge badge-${t.status}">${t.status}</span></td>
+                                <td style="font-weight: 600;">${t.accuracy !== null ? (t.accuracy * 100).toFixed(1) + '%' : '-'}</td>
+                                <td>${t.avg_latency_ms !== null ? t.avg_latency_ms.toFixed(0) + ' ms' : '-'}</td>
+                                <td>${t.avg_tokens !== null ? Math.round(t.avg_tokens) : '-'}</td>
+                                <td>${new Date(t.start_time || Date.now()).toLocaleDateString()}</td>
+                                <td style="text-align: right">
+                                    <a href="/tasks/${t.id}" class="btn btn-secondary btn-sm" style="text-decoration:none; display:inline-block;">View Report</a>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>`;
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // --- Event Listeners ---
+        
+        document.getElementById('evalForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const modelId = document.getElementById('modelSelect').value;
+            const datasetId = document.getElementById('datasetSelect').value;
+            if (!modelId || !datasetId) return alert("Please select both model and dataset");
+
+            const btn = e.target.querySelector('button');
+            const originalText = btn.innerText;
+            btn.innerText = "Starting...";
+            btn.disabled = true;
+
+            await apiCall(`/tasks/?model_id=${modelId}&dataset_id=${datasetId}`, 'POST');
+            
+            btn.innerText = originalText;
+            btn.disabled = false;
+            loadTasks();
+        });
+
+        document.getElementById('modelForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const body = {
+                name: document.getElementById('modelName').value,
+                model_name_identifier: document.getElementById('modelIdentifier').value,
+                api_base_url: document.getElementById('apiBase').value,
+                api_key: document.getElementById('apiKey').value,
+                concurrency_limit: parseInt(document.getElementById('concurrency').value)
+            };
+            await apiCall('/models/', 'POST', body);
+            e.target.reset();
+            toggleSection('modelConfig'); // Auto close
+            loadOptions();
+        });
+
+        document.getElementById('datasetForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            const name = document.getElementById('datasetName').value;
+            formData.append('name', name);
+            formData.append('file', document.getElementById('datasetFile').files[0]);
+            
+            await apiCall(`/datasets/upload?name=${encodeURIComponent(name)}`, 'POST', formData, true);
+            e.target.reset();
+            toggleSection('datasetConfig'); // Auto close
+            loadOptions();
+        });
+
+        // Init
+        loadOptions();
+        loadTasks();
+        // Poll for task updates
+        setInterval(loadTasks, 4000);
+    </script>
+</body>
+</html>

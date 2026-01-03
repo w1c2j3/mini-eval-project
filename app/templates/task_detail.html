@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task Report - Mini Eval</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-content">
+            <a href="/" class="brand">&larr; Dashboard</a>
+            <div class="text-sm text-secondary">Task #{{ task_id }}</div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+            <div>
+                <h1>Evaluation Report</h1>
+                <p>Performance metrics and detailed sample analysis.</p>
+            </div>
+            <div>
+                 <button onclick="location.reload()" class="btn btn-secondary">Refresh</button>
+            </div>
+        </div>
+
+        <!-- Metric Cards -->
+        <div class="grid-cols-3 mb-4">
+            <div class="card stat-card">
+                <div class="stat-value" id="accDisplay" style="color: var(--primary);">--</div>
+                <div class="stat-label">Accuracy</div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-value" id="latDisplay">--</div>
+                <div class="stat-label">Avg Latency</div>
+            </div>
+            <div class="card stat-card">
+                <div class="stat-value" id="tokenDisplay">--</div>
+                <div class="stat-label">Avg Tokens</div>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="card mb-4" style="height: 400px; padding: 1rem;">
+             <canvas id="metricsChart"></canvas>
+        </div>
+
+        <!-- Results Table -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3>Detailed Logs</h3>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <button onclick="changePage(-1)" class="btn btn-secondary btn-sm">&larr;</button>
+                    <span id="pageInfo" class="text-sm" style="font-variant-numeric: tabular-nums;">Page 1</span>
+                    <button onclick="changePage(1)" class="btn btn-secondary btn-sm">&rarr;</button>
+                </div>
+            </div>
+            <div id="resultsTable" class="table-container" style="border: none;">Loading logs...</div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+    <script>
+        checkAuth();
+        const taskId = {{ task_id }};
+        let currentPage = 0;
+        const pageSize = 50;
+        let chartInstance = null;
+
+        async function loadTaskMeta() {
+            try {
+                const task = await apiCall(`/tasks/${taskId}`);
+                
+                // Update Stats
+                document.getElementById('accDisplay').innerText = task.accuracy !== null ? (task.accuracy * 100).toFixed(1) + '%' : 'Pending...';
+                document.getElementById('latDisplay').innerText = task.avg_latency_ms !== null ? task.avg_latency_ms.toFixed(0) + 'ms' : '--';
+                document.getElementById('tokenDisplay').innerText = task.avg_tokens !== null ? Math.round(task.avg_tokens) : '--';
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadResults() {
+            const results = await apiCall(`/tasks/${taskId}/results?limit=${pageSize}&offset=${currentPage * pageSize}`);
+            
+            const container = document.getElementById('resultsTable');
+            if (results.length === 0 && currentPage === 0) {
+                container.innerHTML = '<div style="padding:1rem; color:var(--text-secondary)">No results yet.</div>';
+                return;
+            }
+
+            container.innerHTML = `<table>
+                <thead>
+                    <tr>
+                        <th width="50">#</th>
+                        <th width="80">Result</th>
+                        <th width="40%">Question & Output</th>
+                        <th width="30%">Ground Truth</th>
+                        <th width="100">Stats</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${results.map(r => `
+                        <tr class="${r.is_correct ? 'row-success' : 'row-error'}">
+                            <td class="text-muted text-sm">${r.id}</td>
+                            <td>
+                                <span class="badge ${r.is_correct ? 'badge-completed' : 'badge-failed'}">
+                                    ${r.is_correct ? 'PASS' : 'FAIL'}
+                                </span>
+                            </td>
+                            <td>
+                                <div style="font-weight: 500; margin-bottom: 0.5rem;">Q: ${escapeHtml(r.question)}</div>
+                                <div class="code-box">${escapeHtml(r.raw_output || '')}</div>
+                                ${!r.instruction_followed ? '<div class="text-sm" style="color: var(--danger); margin-top:0.25rem;">⚠️ Format mismatch</div>' : ''}
+                            </td>
+                            <td>
+                                <div class="code-box" style="background: white; border: 1px solid var(--border); color: var(--text-secondary);">${escapeHtml(r.ground_truth)}</div>
+                            </td>
+                            <td class="text-sm text-secondary">
+                                <div>⏱️ ${r.latency_ms.toFixed(0)}ms</div>
+                                <div>🪙 ${r.tokens_used} toks</div>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>`;
+
+            document.getElementById('pageInfo').innerText = `Page ${currentPage + 1}`;
+            
+            // Only render chart on first page load to avoid jumping
+            if (currentPage === 0 && results.length > 0 && !chartInstance) {
+                renderChart(results);
+            }
+        }
+
+        function renderChart(results) {
+            const ctx = document.getElementById('metricsChart').getContext('2d');
+            
+            // Limit chart points for performance if too many
+            const chartData = results.slice(0, 100); 
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartData.map(r => `Q${r.id}`),
+                    datasets: [
+                        {
+                            label: 'Latency (ms)',
+                            data: chartData.map(r => r.latency_ms),
+                            borderColor: '#4f46e5',
+                            backgroundColor: 'rgba(79, 70, 229, 0.1)',
+                            yAxisID: 'y',
+                            tension: 0.3,
+                            fill: true
+                        },
+                        {
+                            label: 'Tokens',
+                            data: chartData.map(r => r.tokens_used),
+                            borderColor: '#10b981',
+                            backgroundColor: 'transparent', // No fill
+                            borderDash: [5, 5],
+                            yAxisID: 'y1',
+                            tension: 0.1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: { position: 'top' },
+                        tooltip: {
+                            backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                            padding: 12,
+                            cornerRadius: 8
+                        }
+                    },
+                    scales: {
+                        x: { display: false }, // Hide X labels for cleaner look
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: 'Latency (ms)' }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            grid: { drawOnChartArea: false },
+                            title: { display: true, text: 'Tokens' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function changePage(delta) {
+            if (currentPage + delta < 0) return;
+            currentPage += delta;
+            loadResults();
+        }
+
+        // Initial Load
+        loadTaskMeta();
+        loadResults();
+        
+        // Polling
+        setInterval(() => {
+            loadTaskMeta();
+            // Optional: Auto-refresh table if on page 1?
+            // loadResults(); 
+        }, 3000);
+    </script>
+</body>
+</html>
